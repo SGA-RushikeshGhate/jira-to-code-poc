@@ -1,0 +1,38 @@
+name: CI - tests and bundle validate
+
+on:
+  pull_request:
+    branches: [dev, uat, main]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    env:
+      BASE_REF: ${{ github.base_ref }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements-dev.txt
+      - run: python -m pytest -q
+
+      - uses: databricks/setup-cli@main
+
+      - name: Resolve bundle target
+        id: target
+        run: |
+          case "$BASE_REF" in
+            dev) t=dev ;;
+            uat) t=uat ;;
+            main) t=prod ;;
+            *) echo "Unexpected base branch $BASE_REF"; exit 1 ;;
+          esac
+          echo "target=$t" >> "$GITHUB_OUTPUT"
+
+      - name: databricks bundle validate
+        env:
+          BUNDLE_TARGET: ${{ steps.target.outputs.target }}
+          DATABRICKS_HOST: ${{ github.base_ref == 'dev' && secrets.DATABRICKS_HOST_DEV || github.base_ref == 'uat' && secrets.DATABRICKS_HOST_UAT || secrets.DATABRICKS_HOST_PROD }}
+          DATABRICKS_TOKEN: ${{ github.base_ref == 'dev' && secrets.DATABRICKS_TOKEN_DEV || github.base_ref == 'uat' && secrets.DATABRICKS_TOKEN_UAT || secrets.DATABRICKS_TOKEN_PROD }}
+        run: databricks bundle validate -t "$BUNDLE_TARGET"

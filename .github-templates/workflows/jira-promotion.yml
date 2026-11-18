@@ -1,0 +1,79 @@
+name: Jira-to-Code promotion agent
+
+# Triggered by a Jira Automation webhook (repository_dispatch) or manually for testing.
+on:
+  repository_dispatch:
+    types: [jira-status-change]
+  workflow_dispatch:
+    inputs:
+      issue_key:
+        description: Jira issue key (e.g. SCRUM-5)
+        required: true
+      status:
+        description: Jira status
+        required: true
+        type: choice
+        options: ["Ready for UAT", "Ready for Prod"]
+      dry_run:
+        description: Validate only, do not push or open a PR
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: promotion-${{ github.event.client_payload.issue_key || inputs.issue_key }}
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    env:
+      ISSUE_KEY: ${{ github.event.client_payload.issue_key || inputs.issue_key }}
+      JIRA_STATUS: ${{ github.event.client_payload.status || inputs.status }}
+      DRY_RUN: ${{ inputs.dry_run || 'false' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          # A PAT / GitHub App token lets the agent's PRs trigger the CI workflow.
+          token: ${{ secrets.AGENT_GITHUB_TOKEN || github.token }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - run: pip install -r requirements-dev.txt
+
+      - uses: databricks/setup-cli@main
+
+      - name: Resolve target environment
+        id: resolve
+        run: |
+          target_env=$(python -c 'import os,sys; sys.path.insert(0,"agent"); from promote import resolve_target_env; print(resolve_target_env(os.environ["JIRA_STATUS"]) or "")')
+          echo "env=$target_env" >> "$GITHUB_OUTPUT"
+          echo "Status '$JIRA_STATUS' -> target env '$target_env'"
+
+      - name: Configure git identity
+        if: steps.resolve.outputs.env != ''
+        run: |
+          git config user.name "jira-to-code-agent"
+          git config user.email "jira-to-code-agent@users.noreply.github.com"
+
+      - name: Run promotion agent
+        if: steps.resolve.outputs.env != ''
+        env:
+          TARGET_ENV: ${{ steps.resolve.outputs.env }}
+          GH_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN || github.token }}
+          DATABRICKS_HOST: ${{ steps.resolve.outputs.env == 'uat' && secrets.DATABRICKS_HOST_UAT || secrets.DATABRICKS_HOST_PROD }}
+          DATABRICKS_TOKEN: ${{ steps.resolve.outputs.env == 'uat' && secrets.DATABRICKS_TOKEN_UAT || secrets.DATABRICKS_TOKEN_PROD }}
+          JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
+          JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
+          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+        run: |
+          args=(--issue-key "$ISSUE_KEY" --env "$TARGET_ENV")
+          if [ "$DRY_RUN" = "true" ]; then args+=(--dry-run); fi
+          python agent/promote.py "${args[@]}"
