@@ -1,0 +1,41 @@
+name: CD - bundle deploy
+
+on:
+  push:
+    branches: [dev, uat, main]
+
+concurrency:
+  group: deploy-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      BRANCH: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements-dev.txt
+      - run: python -m pytest -q
+
+      - uses: databricks/setup-cli@main
+
+      - name: Resolve bundle target
+        id: target
+        run: |
+          case "$BRANCH" in
+            dev) t=dev ;;
+            uat) t=uat ;;
+            main) t=prod ;;
+          esac
+          echo "target=$t" >> "$GITHUB_OUTPUT"
+
+      - name: databricks bundle deploy
+        env:
+          BUNDLE_TARGET: ${{ steps.target.outputs.target }}
+          DATABRICKS_HOST: ${{ github.ref_name == 'dev' && secrets.DATABRICKS_HOST_DEV || github.ref_name == 'uat' && secrets.DATABRICKS_HOST_UAT || secrets.DATABRICKS_HOST_PROD }}
+          DATABRICKS_TOKEN: ${{ github.ref_name == 'dev' && secrets.DATABRICKS_TOKEN_DEV || github.ref_name == 'uat' && secrets.DATABRICKS_TOKEN_UAT || secrets.DATABRICKS_TOKEN_PROD }}
+        run: databricks bundle deploy -t "$BUNDLE_TARGET"
