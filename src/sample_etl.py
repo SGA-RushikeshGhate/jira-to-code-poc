@@ -10,7 +10,7 @@ except NameError:  # __file__ not defined in some interactive contexts
 
 from pyspark.sql import SparkSession  # noqa: E402
 
-from transformations import calculate_net_amount  # noqa: E402
+from transformations import calculate_net_amount, classify_order_size  # noqa: E402
 
 SAMPLE_ORDERS = [
     ("O-1001", 50.0, 10.0),
@@ -21,10 +21,11 @@ SAMPLE_ORDERS = [
 
 
 def build_rows():
-    return [
-        (order_id, amount, discount, calculate_net_amount(amount, discount))
-        for order_id, amount, discount in SAMPLE_ORDERS
-    ]
+    rows = []
+    for order_id, amount, discount in SAMPLE_ORDERS:
+        net = calculate_net_amount(amount, discount)
+        rows.append((order_id, amount, discount, net, classify_order_size(net)))
+    return rows
 
 
 def main():
@@ -37,7 +38,7 @@ def main():
     spark = SparkSession.builder.getOrCreate()
     df = spark.createDataFrame(
         build_rows(),
-        "order_id string, amount double, discount_pct double, net_amount double",
+        "order_id string, amount double, discount_pct double, net_amount double, order_size string",
     )
     table = f"{args.catalog}.{args.schema}.jira2code_sample_orders_{args.env}"
     df.write.mode("overwrite").option("overwriteSchema", "true").saveAsTable(table)
